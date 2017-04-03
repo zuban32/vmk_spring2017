@@ -2,7 +2,7 @@
 #include <stdio.h>
 
 #define BUFFER_SIZE 0x1000
-
+#define CYRILLIC_CODE_PAGE 1251 
 
 HANDLE GetFileFromArguments( int argc, char** argv );
 unsigned int ReadFileToBuffer( HANDLE fileHandle, char buffer[ BUFFER_SIZE ] );
@@ -12,6 +12,9 @@ void ParseFile( char* buffer, int bufferSize );
 
 int main( int argc, char** argv )
 {
+  UINT codePage = GetConsoleOutputCP( );
+  SetConsoleOutputCP( CYRILLIC_CODE_PAGE ); // set code page to display russian symbols
+
   HANDLE fileHandle = GetFileFromArguments( argc, argv );
   if( NULL != fileHandle )
   {
@@ -23,6 +26,8 @@ int main( int argc, char** argv )
       ParseFile( buffer, readSize );
     }
   }
+  
+  SetConsoleOutputCP( codePage );  // restore code page
   return 0x00;
 }
 
