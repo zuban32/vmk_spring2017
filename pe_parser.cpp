@@ -13,8 +13,6 @@ void ProcessFile(HANDLE f, char* buffer, int bufferSize);
 
 int main(int argc, char **argv)
 {
-	printf("Program started\n");
-	fflush(stdout);
 	UINT codePage = GetConsoleOutputCP();
 	SetConsoleOutputCP(CYRILLIC_CODE_PAGE); // set code page to display russian symbols
 
