@@ -68,6 +68,7 @@ unsigned int ReadFileToBuffer(HANDLE fileHandle, char *buffer, size_t size)
 
 void ProcessFile(HANDLE f, char* buffer, int bufferSize)
 {
+	bool alloc = false;
 	IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)buffer;
 	if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
 		printf("This is not a PE file\n");
@@ -79,7 +80,6 @@ void ProcessFile(HANDLE f, char* buffer, int bufferSize)
 		goto cleanup;
 	}
 
-	bool alloc = false;
 	if (dos_header->e_lfanew > bufferSize) {
 		int newSize = (dos_header->e_lfanew / bufferSize + 1) * bufferSize * sizeof(*buffer);
 		buffer = (char *)calloc((dos_header->e_lfanew / bufferSize + 1) * bufferSize, sizeof(*buffer));
