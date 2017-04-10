@@ -5,7 +5,7 @@
 #define CYRILLIC_CODE_PAGE 1251 
 
 HANDLE GetFileFromArguments(int argc, char **argv);
-unsigned int ReadFileToBuffer(HANDLE fileHandle, char buffer[BUFFER_SIZE]);
+unsigned int ReadFileToBuffer(HANDLE fileHandle, char *buffer, size_t size);
 void PrintHelp(char* programName);
 void PrintError(char* functionFrom);
 void ProcessFile(HANDLE f, char* buffer, int bufferSize);
@@ -13,13 +13,15 @@ void ProcessFile(HANDLE f, char* buffer, int bufferSize);
 
 int main(int argc, char **argv)
 {
+	printf("Program started\n");
+	fflush(stdout);
 	UINT codePage = GetConsoleOutputCP();
 	SetConsoleOutputCP(CYRILLIC_CODE_PAGE); // set code page to display russian symbols
 
 	HANDLE fileHandle = GetFileFromArguments(argc, argv);
 	if (fileHandle) {
 		char buffer[BUFFER_SIZE];
-		int readSize = ReadFileToBuffer(fileHandle, buffer);
+		int readSize = ReadFileToBuffer(fileHandle, buffer, BUFFER_SIZE);
 		if (readSize != 0) {
 			ProcessFile(fileHandle, buffer, readSize);
 		}
@@ -44,7 +46,7 @@ HANDLE GetFileFromArguments(int argc, char **argv)
 	return fileHandle;
 }
 
-unsigned int ReadFileToBuffer(HANDLE fileHandle, char buffer[BUFFER_SIZE])
+unsigned int ReadFileToBuffer(HANDLE fileHandle, char *buffer, size_t size)
 {
 	unsigned int returnValue = 0x00;
 	if (NULL != fileHandle) {
@@ -53,7 +55,7 @@ unsigned int ReadFileToBuffer(HANDLE fileHandle, char buffer[BUFFER_SIZE])
 			PrintError("GetFileSize");
 		} else {
 			unsigned long bytesRead;
-			fileSize = min(fileSize, BUFFER_SIZE);
+			fileSize = min(fileSize, size);
 			if (true == ReadFile(fileHandle, buffer, fileSize, &bytesRead, NULL)) {
 				returnValue = bytesRead;
 			} else {
@@ -69,7 +71,23 @@ void ProcessFile(HANDLE f, char* buffer, int bufferSize)
 	IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)buffer;
 	if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
 		printf("This is not a PE file\n");
-		return;
+		goto cleanup;
+	}
+
+	if (dos_header->e_cp * 4096 < dos_header->e_lfanew || dos_header->e_lfanew < 0) {
+		printf("NT header doesn't exist\n");
+		goto cleanup;
+	}
+
+	bool alloc = false;
+	if (dos_header->e_lfanew > bufferSize) {
+		int newSize = (dos_header->e_lfanew / bufferSize + 1) * bufferSize * sizeof(*buffer);
+		buffer = (char *)calloc((dos_header->e_lfanew / bufferSize + 1) * bufferSize, sizeof(*buffer));
+		alloc = true;
+		SetFilePointer(f, 0, 0, FILE_BEGIN);
+		if (ReadFileToBuffer(f, buffer, newSize) < dos_header->e_lfanew) {
+			printf("NT header doesn't exist\n");
+		}
 	}
 
 	DWORD pe_sign = *((DWORD *)(buffer + dos_header->e_lfanew));
@@ -77,7 +95,7 @@ void ProcessFile(HANDLE f, char* buffer, int bufferSize)
 
 	if (pe_sign != IMAGE_NT_SIGNATURE) {
 		printf("Doesn't have NT headers: signature = %#x\n", pe_sign);
-		return;
+		goto cleanup;
 	}
 
 	bool is32 = false;
@@ -87,7 +105,7 @@ void ProcessFile(HANDLE f, char* buffer, int bufferSize)
 		is32 = true;
 	} else if (opt_magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
 		printf("Incorrect optional header magic! (%#x)\n", opt_magic);
-		return;
+		goto cleanup;
 	}
 
 	DWORD sections_offset = is32 ? sizeof(IMAGE_NT_HEADERS32) : sizeof(IMAGE_NT_HEADERS64);
@@ -124,6 +142,10 @@ void ProcessFile(HANDLE f, char* buffer, int bufferSize)
 	}
 	if (!found) {
 		printf("Error: no entry point section found (???)\n");
+	}
+cleanup:
+	if (alloc) {
+		free(buffer);
 	}
 }
 
