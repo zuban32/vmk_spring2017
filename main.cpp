@@ -1,6 +1,7 @@
 ﻿#include "pe_parser.h"
 #include <locale.h>
 #include <stdio.h>
+#include <conio.h>
 
 
 int main(int argc, char** argv)
@@ -37,5 +38,6 @@ int main(int argc, char** argv)
 		CloseHandle(fileHandle);
 	}
 	SetConsoleOutputCP(codePage);  // restore code page
+	_getch();
 	return 0;
 }

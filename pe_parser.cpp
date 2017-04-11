@@ -110,9 +110,8 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
 
 					memcpy(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData, code.code, code.sizeOfCode);
 					opt_header->AddressOfEntryPoint = sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData;
-					sect_hdr[i].Misc.VirtualSize = sect_hdr[i].SizeOfRawData + code.sizeOfCode;
+					//sect_hdr[i].Misc.VirtualSize = sect_hdr[i].SizeOfRawData + code.sizeOfCode;
 					sect_hdr[i].SizeOfRawData += opt_header->FileAlignment;
-					opt_header->SizeOfImage += opt_header->FileAlignment;
 					opt_header->SizeOfCode += opt_header->FileAlignment;
 
 					for (int j = 0; j < file_header->NumberOfSections; j++) {
@@ -154,6 +153,7 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
 			memcpy(sect_hdr + file_header->NumberOfSections, &new_section, sizeof(new_section));
 
 			file_header->NumberOfSections++;
+			// section_alignment
 			opt_header->SizeOfImage += opt_header->FileAlignment;
 			opt_header->SizeOfHeaders += sizeof(new_section);
 
