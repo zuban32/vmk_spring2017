@@ -13,10 +13,19 @@
 #define CAN_NOT_READ_ENTIRE_FILE "Can not read entire file"
 #define TOO_LARGE_FILE "File is larger than allowed, can not parse"
 #define NULL_FILE_SIZE "File has size of 0"  
+#define NOT_PE_FILE "This file is not PE"
+
+enum PatchMode {
+	PATCH_CAVERN,
+	PATCH_EXTSECT,
+	PATCH_NEWSECT,
+	PATCH_TOTAL
+};
+
 #pragma endregion
 
 
-#pragma region __ Structutes __
+#pragma region __ Structures __
 struct ENTRY_POINT_CODE
 {
   DWORD sizeOfCode;
@@ -29,6 +38,7 @@ struct ENTRY_POINT_CODE
 HANDLE GetFileFromArguments( int argc, char** argv );
 DWORD ReadFileToBuffer( HANDLE fileHandle, char* buffer, DWORD bufferSize );
 DWORD WriteFileFromBuffer( char* filename, char* buffer, DWORD bufferSize );
+bool CheckPE(char *fileBuf, DWORD bufSize);
 void ParseFile( char* buffer, DWORD bufferSize );
 void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename );
 DWORD CheckFileSizeForCorrectness( DWORD fileSize );

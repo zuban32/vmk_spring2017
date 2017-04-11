@@ -1,26 +1,27 @@
 ﻿#include "pe_parser.h"
+#include <string.h>
+#include <time.h>
 
-void ParseFile( char* buffer, DWORD bufferSize )
+bool CheckPE(char *fileBuf, DWORD bufSize)
 {
-  // TODO: Необходимо выполнить разбор файла и написать в какой секции располагается точка входа. 
-  // Вывод должен быть в следующем формате 
-  // ## Entry point (<значение точки входа>)
-  // ## In section <индекс секции>, <название секции>
-  // ## Offset in section <смещение относительно начала секции>, <смещение в процентах> %
-  // 
-  // Где смещение в процентах вычисляется относительно размера секции. Например, если секция имеет 
-  // размер 1000, а точка входа располагается по смещению 400 в ней, то необходимо вывести 40 %.
-  //
-  // Все используемые структуры можно посмотреть в заголовочном файле WinNT.h (он уже подключен, так
-  // как указан в Windows.h). Например вам могут потребоваться следующие структуры:
-  //IMAGE_DOS_HEADER заголовок, который используется в системе DOS (сейчас вам в нем потребуется только поле e_lfanew (что оно означает?)
-  //IMAGE_NT_HEADERS заголовок нового формата исполняемого файла (PE), используемого в Windows NT
-  //IMAGE_FILE_HEADER один из двух заголовков, из которых состоит IMAGE_NT_HEADER, содержит NumberOfSections
-  //IMAGE_OPTIONAL_HEADER второй заголовок IMAGE_NT_HEADER, содержит важные для нас поля ImageBase и AddressOfEntryPoint
-  //IMAGE_SECTION_HEADER заголовок секции, в нем содержится название, размер и расположение секции
-  //
-  // Не забывайте проверять такие поля как сигнатуры файлов (ведь надо убедиться, что разбираем собственно исполняемый файл)
-  printf( "Buffer length: %d\nImplement parsing of file\n", bufferSize );
+	IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)fileBuf;
+	if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
+		printf("This is not a PE file\n");
+		return false;
+	}
+
+	IMAGE_NT_HEADERS32 *nt_headers = (IMAGE_NT_HEADERS32 *)(fileBuf + dos_header->e_lfanew);
+
+	if (nt_headers->Signature != IMAGE_NT_SIGNATURE) {
+		printf("Doesn't have NT headers: signature = %x\n", nt_headers->Signature);
+		return false;
+	}
+
+	if (nt_headers->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+		printf("Incorrect optional header magic! (%x)\n", nt_headers->OptionalHeader.Magic);
+		return false;
+	}
+	return true;
 }
 
 void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
@@ -48,6 +49,131 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
   // можно сформировать по имени исходного файла (originalFilename). 
   // 
 
+	srand(time(NULL));
+	//PatchMode m = static_cast<PatchMode>(rand() % PATCH_TOTAL);
+	PatchMode m = PATCH_EXTSECT;
+
+	IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)buffer;
+
+	IMAGE_NT_HEADERS32 *nt_headers = (IMAGE_NT_HEADERS32 *)(buffer + dos_header->e_lfanew);
+	IMAGE_FILE_HEADER *file_header = &(nt_headers->FileHeader);
+	IMAGE_OPTIONAL_HEADER32 *opt_header = &(nt_headers->OptionalHeader);
+
+	DWORD newBufferSize = bufferSize;
+	if (m != PATCH_CAVERN) {
+		newBufferSize += opt_header->FileAlignment;
+		buffer = (char *)realloc(buffer, newBufferSize);
+		if (!buffer) {
+			printf("Error reallocing - return\n");
+			return;
+		}
+	}
+
+	DWORD sections_offset = sizeof(*nt_headers);
+	ULONGLONG entry_point, ep_offset;
+
+	entry_point = opt_header->AddressOfEntryPoint;
+	ep_offset = dos_header->e_lfanew + offsetof(IMAGE_NT_HEADERS32, OptionalHeader) +
+		offsetof(IMAGE_OPTIONAL_HEADER32, AddressOfEntryPoint);
+
+	bool ep_done = false;
+
+	DWORD chars;
+	IMAGE_SECTION_HEADER *sect_hdr = (IMAGE_SECTION_HEADER *)(buffer + dos_header->e_lfanew + sections_offset);
+
+	if (m == PATCH_CAVERN) {
+		for (int i = 0; i < file_header->NumberOfSections; i++) {
+			if (sect_hdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+				ENTRY_POINT_CODE code = GetEntryPointCodeSmall(sect_hdr[i].VirtualAddress + sect_hdr[i].Misc.VirtualSize, opt_header->AddressOfEntryPoint);
+				if (sect_hdr[i].SizeOfRawData - sect_hdr[i].Misc.VirtualSize < code.sizeOfCode) {
+					printf("Cavern isn't big enough\n");
+				} else {
+					memcpy(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].Misc.VirtualSize, code.code, code.sizeOfCode);
+					opt_header->AddressOfEntryPoint = sect_hdr[i].VirtualAddress + sect_hdr[i].Misc.VirtualSize;
+					ep_done = true;
+					break;
+				}
+			}
+		}
+	} else if (m == PATCH_EXTSECT) {
+		for (int i = 0; i < file_header->NumberOfSections; i++) {
+			if (sect_hdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+				DWORD aligned_next_addr = (sect_hdr[i].VirtualAddress & (-opt_header->SectionAlignment)) + opt_header->SectionAlignment;
+				ENTRY_POINT_CODE code = GetEntryPointCodeSmall(sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData, opt_header->AddressOfEntryPoint);
+				if (aligned_next_addr - (sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData) < code.sizeOfCode) {
+					printf("Can't extend the section\n");
+					printf("Next = %x, cur = (%x - %x)\n", aligned_next_addr, sect_hdr[i].VirtualAddress, sect_hdr[i].SizeOfRawData);
+				} else {
+					memmove(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData + opt_header->FileAlignment, 
+						buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData,
+						bufferSize - sect_hdr[i].PointerToRawData - sect_hdr[i].SizeOfRawData);
+
+					memcpy(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData, code.code, code.sizeOfCode);
+					opt_header->AddressOfEntryPoint = sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData;
+					sect_hdr[i].Misc.VirtualSize = sect_hdr[i].SizeOfRawData + code.sizeOfCode;
+					sect_hdr[i].SizeOfRawData += opt_header->FileAlignment;
+					opt_header->SizeOfImage += opt_header->FileAlignment;
+					opt_header->SizeOfCode += opt_header->FileAlignment;
+
+					for (int j = 0; j < file_header->NumberOfSections; j++) {
+						if (sect_hdr[j].PointerToRawData > sect_hdr[i].PointerToRawData) {
+							sect_hdr[j].PointerToRawData += opt_header->FileAlignment;
+						}
+					}
+
+					ep_done = true;
+					break;
+				}
+			}
+		}
+	} else if (m == PATCH_NEWSECT) {
+		DWORD min_addr = (DWORD)-1, max_addr = 0;
+		DWORD last_size = 0;
+		for (int i = 0; i < file_header->NumberOfSections; i++) {
+			if (sect_hdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+				chars = sect_hdr[i].Characteristics;
+			}
+			if (sect_hdr[i].VirtualAddress < min_addr) {
+				min_addr = sect_hdr[i].VirtualAddress;
+			} else if (sect_hdr[i].VirtualAddress > max_addr) {
+				max_addr = sect_hdr[i].VirtualAddress;
+				last_size = sect_hdr[i].SizeOfRawData;
+			}
+		}
+
+		if (min_addr - ((char *)(sect_hdr + file_header->NumberOfSections) + sizeof(IMAGE_SECTION_HEADER) - buffer) < sizeof(IMAGE_SECTION_HEADER)) {
+			printf("New section patching impossible\n");
+		} else {
+			IMAGE_SECTION_HEADER new_section;
+			new_section.Characteristics = chars;
+			new_section.VirtualAddress = ((max_addr + last_size) & (-opt_header->SectionAlignment)) + opt_header->SectionAlignment;
+			memcpy(new_section.Name, ".text1\0", 7);
+			new_section.SizeOfRawData = opt_header->FileAlignment;
+			new_section.Misc.VirtualSize = 5;
+			new_section.PointerToRawData = bufferSize;
+			memcpy(sect_hdr + file_header->NumberOfSections, &new_section, sizeof(new_section));
+
+			file_header->NumberOfSections++;
+			opt_header->SizeOfImage += opt_header->FileAlignment;
+			opt_header->SizeOfHeaders += sizeof(new_section);
+
+			ENTRY_POINT_CODE code = GetEntryPointCodeSmall(new_section.VirtualAddress, opt_header->AddressOfEntryPoint);
+			memcpy(buffer + bufferSize, code.code, code.sizeOfCode);
+			opt_header->AddressOfEntryPoint = new_section.VirtualAddress;
+			ep_done = true;
+		}
+	}
+
+	int len = strlen(originalFilename);
+	char *new_name = (char *)calloc(len + 1, sizeof(*new_name));
+	memcpy(new_name+1, originalFilename, len);
+	new_name[0] = '1';
+	WriteFileFromBuffer(new_name, buffer, newBufferSize);
+	free(new_name);
+
+	if (ep_done) {
+		printf("File succesfully patched\n");
+	}
 }
 
 ENTRY_POINT_CODE GetEntryPointCodeSmall( DWORD rvaToNewEntryPoint, DWORD rvaToOriginalEntryPoint )
