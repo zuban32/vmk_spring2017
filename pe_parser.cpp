@@ -24,7 +24,7 @@ bool CheckPE(char *fileBuf, DWORD bufSize)
 	return true;
 }
 
-void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
+void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename, bool *reallocated )
 {
   // TODO: Необходимо изменить точку входа в программу (AddressOfEntryPoint).
   // Поддерживаются только 32-разрядные файлы (или можете написать свой код точки входа для 64-разрядных)
@@ -49,9 +49,9 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
   // можно сформировать по имени исходного файла (originalFilename). 
   // 
 
+	*reallocated = false;
 	srand(time(NULL));
-	//PatchMode m = static_cast<PatchMode>(rand() % PATCH_TOTAL);
-	PatchMode m = PATCH_EXTSECT;
+	PatchMode m = static_cast<PatchMode>(rand() % PATCH_TOTAL);
 
 	IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)buffer;
 
@@ -61,13 +61,23 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
 
 	DWORD newBufferSize = bufferSize;
 	if (m != PATCH_CAVERN) {
-		newBufferSize += opt_header->FileAlignment;
+		if (m == PATCH_EXTSECT) {
+			newBufferSize += opt_header->FileAlignment;
+		} else {
+			newBufferSize += opt_header->SectionAlignment;
+		}
 		buffer = (char *)realloc(buffer, newBufferSize);
 		if (!buffer) {
 			printf("Error reallocing - return\n");
 			return;
 		}
+		*reallocated = true;
 	}
+
+	dos_header = (IMAGE_DOS_HEADER *)buffer;
+	nt_headers = (IMAGE_NT_HEADERS32 *)(buffer + dos_header->e_lfanew);
+	file_header = &(nt_headers->FileHeader);
+	opt_header = &(nt_headers->OptionalHeader);
 
 	DWORD sections_offset = sizeof(*nt_headers);
 	ULONGLONG entry_point, ep_offset;
@@ -82,41 +92,78 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
 	IMAGE_SECTION_HEADER *sect_hdr = (IMAGE_SECTION_HEADER *)(buffer + dos_header->e_lfanew + sections_offset);
 
 	if (m == PATCH_CAVERN) {
+		printf("Patch mode - cavern\n");
 		for (int i = 0; i < file_header->NumberOfSections; i++) {
 			if (sect_hdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) {
-				ENTRY_POINT_CODE code = GetEntryPointCodeSmall(sect_hdr[i].VirtualAddress + sect_hdr[i].Misc.VirtualSize, opt_header->AddressOfEntryPoint);
-				if (sect_hdr[i].SizeOfRawData - sect_hdr[i].Misc.VirtualSize < code.sizeOfCode) {
+				DWORD code_min_start = sect_hdr[i].VirtualAddress + sect_hdr[i].Misc.VirtualSize;
+				DWORD code_max_start = sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData - GetMaxCodeSize();
+				if (code_max_start < code_min_start) {
 					printf("Cavern isn't big enough\n");
 				} else {
-					memcpy(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].Misc.VirtualSize, code.code, code.sizeOfCode);
-					opt_header->AddressOfEntryPoint = sect_hdr[i].VirtualAddress + sect_hdr[i].Misc.VirtualSize;
+					DWORD code_off = 0;
+					if (code_max_start > code_min_start) {
+						code_off = rand() % (code_max_start - code_min_start);
+					}
+					printf("Random code offset = %x\n", code_off);
+					DWORD code_start = code_min_start + code_off;
+					ENTRY_POINT_CODE code = GetEntryPointCodeSmall(code_start,
+						opt_header->AddressOfEntryPoint);
+					memcpy(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].Misc.VirtualSize + code_off, 
+						code.code, 
+						code.sizeOfCode);
+					opt_header->AddressOfEntryPoint = code_start;
 					ep_done = true;
 					break;
 				}
 			}
 		}
 	} else if (m == PATCH_EXTSECT) {
+		printf("Patch mode - section extension\n");
 		for (int i = 0; i < file_header->NumberOfSections; i++) {
 			if (sect_hdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) {
-				DWORD aligned_next_addr = (sect_hdr[i].VirtualAddress & (-opt_header->SectionAlignment)) + opt_header->SectionAlignment;
-				ENTRY_POINT_CODE code = GetEntryPointCodeSmall(sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData, opt_header->AddressOfEntryPoint);
-				if (aligned_next_addr - (sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData) < code.sizeOfCode) {
+				printf("Section[%d]: %s\n addr = %x, size = %x\n",
+					i,
+					sect_hdr[i].Name,
+					sect_hdr[i].VirtualAddress + opt_header->ImageBase,
+					sect_hdr[i].SizeOfRawData);
+				DWORD aligned_next_addr = ((sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData) & 
+					(-opt_header->SectionAlignment)) + opt_header->SectionAlignment;
+				printf("Aligned next addr = %x\n", aligned_next_addr);
+				DWORD code_max_start = min(sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData + 
+					opt_header->FileAlignment - GetMaxCodeSize(), aligned_next_addr - GetMaxCodeSize());
+				DWORD code_min_start = sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData;
+				if (code_max_start < code_min_start) {
 					printf("Can't extend the section\n");
-					printf("Next = %x, cur = (%x - %x)\n", aligned_next_addr, sect_hdr[i].VirtualAddress, sect_hdr[i].SizeOfRawData);
+					printf("Next = %x, cur = (%x - %x)\n", 
+						aligned_next_addr, 
+						sect_hdr[i].VirtualAddress, 
+						sect_hdr[i].SizeOfRawData);
 				} else {
-					memmove(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData + opt_header->FileAlignment, 
+					DWORD code_off = 0;
+					if (code_max_start > code_min_start) {
+						code_off = rand() % (code_max_start - code_min_start);
+					}
+					printf("Random code offset = %x\n", code_off);
+					DWORD code_start = code_min_start + code_off;
+					DWORD data_shift = (code_off / opt_header->FileAlignment + 1) * opt_header->FileAlignment;
+					ENTRY_POINT_CODE code = GetEntryPointCodeSmall(code_start,
+						opt_header->AddressOfEntryPoint);
+
+					memmove(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData + data_shift,
 						buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData,
 						bufferSize - sect_hdr[i].PointerToRawData - sect_hdr[i].SizeOfRawData);
 
-					memcpy(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData, code.code, code.sizeOfCode);
-					opt_header->AddressOfEntryPoint = sect_hdr[i].VirtualAddress + sect_hdr[i].SizeOfRawData;
-					//sect_hdr[i].Misc.VirtualSize = sect_hdr[i].SizeOfRawData + code.sizeOfCode;
-					sect_hdr[i].SizeOfRawData += opt_header->FileAlignment;
-					opt_header->SizeOfCode += opt_header->FileAlignment;
+					memcpy(buffer + sect_hdr[i].PointerToRawData + sect_hdr[i].SizeOfRawData + code_off, 
+						code.code, 
+						code.sizeOfCode);
+					opt_header->AddressOfEntryPoint = code_start;
+					sect_hdr[i].Misc.VirtualSize = sect_hdr[i].SizeOfRawData + code_off + code.sizeOfCode;
+					sect_hdr[i].SizeOfRawData += data_shift;
+					opt_header->SizeOfCode += data_shift;
 
 					for (int j = 0; j < file_header->NumberOfSections; j++) {
 						if (sect_hdr[j].PointerToRawData > sect_hdr[i].PointerToRawData) {
-							sect_hdr[j].PointerToRawData += opt_header->FileAlignment;
+							sect_hdr[j].PointerToRawData += data_shift;
 						}
 					}
 
@@ -126,6 +173,7 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
 			}
 		}
 	} else if (m == PATCH_NEWSECT) {
+		printf("Patch mode - new section\n");
 		DWORD min_addr = (DWORD)-1, max_addr = 0;
 		DWORD last_size = 0;
 		for (int i = 0; i < file_header->NumberOfSections; i++) {
@@ -140,34 +188,39 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
 			}
 		}
 
-		if (min_addr - ((char *)(sect_hdr + file_header->NumberOfSections) + sizeof(IMAGE_SECTION_HEADER) - buffer) < sizeof(IMAGE_SECTION_HEADER)) {
+		if (min_addr - ((char *)(sect_hdr + file_header->NumberOfSections) + sizeof(IMAGE_SECTION_HEADER) - buffer)
+			< sizeof(IMAGE_SECTION_HEADER)) {
 			printf("New section patching impossible\n");
 		} else {
+			DWORD code_off = rand() % (opt_header->SectionAlignment - GetMaxCodeSize());
+			printf("Random code offset = %x\n", code_off);
+
 			IMAGE_SECTION_HEADER new_section;
 			new_section.Characteristics = chars;
-			new_section.VirtualAddress = ((max_addr + last_size) & (-opt_header->SectionAlignment)) + opt_header->SectionAlignment;
+			new_section.VirtualAddress = ((max_addr + last_size) & (-opt_header->SectionAlignment))
+				+ opt_header->SectionAlignment;
 			memcpy(new_section.Name, ".text1\0", 7);
-			new_section.SizeOfRawData = opt_header->FileAlignment;
-			new_section.Misc.VirtualSize = 5;
+			new_section.SizeOfRawData = (code_off / opt_header->FileAlignment + 1) * opt_header->FileAlignment;
+			new_section.Misc.VirtualSize = code_off + GetMaxCodeSize();
 			new_section.PointerToRawData = bufferSize;
 			memcpy(sect_hdr + file_header->NumberOfSections, &new_section, sizeof(new_section));
 
 			file_header->NumberOfSections++;
-			// section_alignment
-			opt_header->SizeOfImage += opt_header->FileAlignment;
+			opt_header->SizeOfImage += opt_header->SectionAlignment;
 			opt_header->SizeOfHeaders += sizeof(new_section);
 
-			ENTRY_POINT_CODE code = GetEntryPointCodeSmall(new_section.VirtualAddress, opt_header->AddressOfEntryPoint);
-			memcpy(buffer + bufferSize, code.code, code.sizeOfCode);
-			opt_header->AddressOfEntryPoint = new_section.VirtualAddress;
+			ENTRY_POINT_CODE code = GetEntryPointCodeSmall(new_section.VirtualAddress + code_off, opt_header->AddressOfEntryPoint);
+			memcpy(buffer + bufferSize + code_off, code.code, code.sizeOfCode);
+			opt_header->AddressOfEntryPoint = new_section.VirtualAddress + code_off;
 			ep_done = true;
 		}
 	}
 
 	int len = strlen(originalFilename);
-	char *new_name = (char *)calloc(len + 1, sizeof(*new_name));
+	char *new_name = (char *)calloc(len + 2, sizeof(*new_name));
 	memcpy(new_name+1, originalFilename, len);
 	new_name[0] = '1';
+	new_name[len + 1] = 0;
 	WriteFileFromBuffer(new_name, buffer, newBufferSize);
 	free(new_name);
 
@@ -176,10 +229,22 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename )
 	}
 }
 
+static char byteCode[] = { 
+	0xE8, 0x00, 0x00, 0x00, 
+	0x00, 0x50, 0x8B, 0x44, 
+	0x24, 0x04, 0x05, 0x77, 
+	0x77, 0x77, 0x77, 0x89,
+	0x44, 0x24, 0x04, 0x58, 
+	0xC3 };
+
+DWORD GetMaxCodeSize()
+{
+	return sizeof(byteCode);
+}
+
 ENTRY_POINT_CODE GetEntryPointCodeSmall( DWORD rvaToNewEntryPoint, DWORD rvaToOriginalEntryPoint )
 {
   ENTRY_POINT_CODE code;
-  char byteCode[] = { 0xE8, 0x00, 0x00, 0x00, 0x00, 0x50, 0x8B, 0x44, 0x24, 0x04, 0x05, 0x77, 0x77, 0x77, 0x77, 0x89, 0x44, 0x24, 0x04, 0x58, 0xC3 };
   DWORD offsetToOriginalEntryPoint = rvaToOriginalEntryPoint - rvaToNewEntryPoint - SIZE_OF_CALL_INSTRUCTION;
   DWORD* positionOfOffsetToOriginalEntryPoint = GetPositionOfPattern( byteCode, sizeof( byteCode ), OFFSET_PATTERN );
   if( NULL != positionOfOffsetToOriginalEntryPoint )

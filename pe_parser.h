@@ -40,9 +40,10 @@ DWORD ReadFileToBuffer( HANDLE fileHandle, char* buffer, DWORD bufferSize );
 DWORD WriteFileFromBuffer( char* filename, char* buffer, DWORD bufferSize );
 bool CheckPE(char *fileBuf, DWORD bufSize);
 void ParseFile( char* buffer, DWORD bufferSize );
-void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename );
+void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename, bool *reallocated );
 DWORD CheckFileSizeForCorrectness( DWORD fileSize );
 DWORD* GetPositionOfPattern( char* buffer, DWORD bufferSize, DWORD pattern );
+DWORD GetMaxCodeSize();
 ENTRY_POINT_CODE GetEntryPointCodeSmall( DWORD rvaToNewEntryPoint, DWORD rvaToOriginalEntryPoint );
 
 void PrintError( char* functionFrom );

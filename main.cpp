@@ -1,7 +1,6 @@
 ﻿#include "pe_parser.h"
 #include <locale.h>
 #include <stdio.h>
-#include <conio.h>
 
 
 int main(int argc, char** argv)
@@ -17,7 +16,12 @@ int main(int argc, char** argv)
 		if (INVALID_FILE_SIZE != fileSize)
 		{
 			char* buffer = (char*)malloc(fileSize);
+			if (!buffer) {
+				printf("Error mallocing\n");
+				return 1;
+			}
 			int readSize = ReadFileToBuffer(fileHandle, buffer, fileSize);
+			bool reallocated = false;
 			if (readSize != fileSize)
 			{
 				printf(CAN_NOT_READ_ENTIRE_FILE);
@@ -27,17 +31,14 @@ int main(int argc, char** argv)
 			}
 			else
 			{
-				if (!buffer) {
-					printf("Error reallocing - exit\n");
-				} else {
-					ChangeEntryPoint(buffer, fileSize, argv[1]);
-				}
+				ChangeEntryPoint(buffer, fileSize, argv[1], &reallocated);
 			}
-			free(buffer);
+			if(!reallocated) {
+				free(buffer);
+			}
 		}
 		CloseHandle(fileHandle);
 	}
 	SetConsoleOutputCP(codePage);  // restore code page
-	_getch();
 	return 0;
 }
