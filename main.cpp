@@ -25,9 +25,6 @@ int main(int argc, char** argv)
 			if (readSize != fileSize)
 			{
 				printf(CAN_NOT_READ_ENTIRE_FILE);
-			} else if (!CheckPE(buffer, fileSize))
-			{
-				printf(NOT_PE_FILE);
 			}
 			else
 			{
