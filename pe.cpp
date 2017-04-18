@@ -32,7 +32,14 @@ int ParsePE(char *fileBuf, DWORD bufSize, PEFile *res)
 	if (dos_header->e_lfanew + sizeof(*nt_headers) + nt_headers->FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER) >= bufSize) {
 		return 1;
 	}
-	IMAGE_SECTION_HEADER *sect_hdr = (IMAGE_SECTION_HEADER *)(fileBuf + dos_header->e_lfanew + sizeof(*nt_headers));
+
+	if (nt_headers->OptionalHeader.FileAlignment < 512 || nt_headers->OptionalHeader.FileAlignment > 65536 ||
+		nt_headers->OptionalHeader.SectionAlignment < nt_headers->OptionalHeader.FileAlignment) {
+		printf("Incorrect file or section alignment\n");
+		return 1;
+	}
+
+	IMAGE_SECTION_HEADER *sect_hdr = (IMAGE_SECTION_HEADER *)(fileBuf + dos_header->e_lfanew + sizeof(*nt_headers) - sizeof(IMAGE_OPTIONAL_HEADER32) + nt_headers->FileHeader.SizeOfOptionalHeader);
 
 	res->dos_hdr = dos_header;
 	res->nt_hdr = nt_headers;
@@ -40,5 +47,17 @@ int ParsePE(char *fileBuf, DWORD bufSize, PEFile *res)
 	res->opt_hdr = &nt_headers->OptionalHeader;
 	res->sect_hdr_start = sect_hdr;
 
+	return 0;
+}
+
+int dumpSections(PEFile *f)
+{
+	for (int i = 0; i < f->file_hdr->NumberOfSections; i++) {
+		printf("Section[%d]: %s, (%x - %x)\n",
+			i,
+			f->sect_hdr_start[i].Name,
+			f->sect_hdr_start[i].VirtualAddress,
+			f->sect_hdr_start[i].VirtualAddress + f->sect_hdr_start[i].SizeOfRawData);
+	}
 	return 0;
 }

@@ -85,17 +85,15 @@ static int patchNewSect(PEFile *pe, char *buffer, DWORD bufSize)
 {
 	printf("Patch mode - new section\n");
 
-	DWORD chars;
+	DWORD chars = IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_CODE;
 	DWORD min_addr = (DWORD)-1, max_addr = 0;
 	DWORD last_size = 0;
 	for (int i = 0; i < pe->file_hdr->NumberOfSections; i++) {
 		IMAGE_SECTION_HEADER *sect = pe->sect_hdr_start + i;
-		if (sect->Characteristics & IMAGE_SCN_MEM_EXECUTE) {
-			chars = sect->Characteristics;
-		}
 		if (sect->VirtualAddress < min_addr) {
 			min_addr = sect->VirtualAddress;
-		} else if (sect->VirtualAddress > max_addr) {
+		} 
+		if (sect->VirtualAddress > max_addr) {
 			max_addr = sect->VirtualAddress;
 			last_size = sect->SizeOfRawData;
 		}
@@ -121,6 +119,7 @@ static int patchNewSect(PEFile *pe, char *buffer, DWORD bufSize)
 		pe->file_hdr->NumberOfSections++;
 		pe->opt_hdr->SizeOfImage += pe->opt_hdr->SectionAlignment;
 		pe->opt_hdr->SizeOfHeaders += sizeof(new_section);
+		pe->opt_hdr->SizeOfCode += new_section.Misc.VirtualSize;
 
 		ENTRY_POINT_CODE code = GetEntryPointCodeSmall(new_section.VirtualAddress + code_off, pe->opt_hdr->AddressOfEntryPoint);
 		memcpy(buffer + bufSize + code_off, code.code, code.sizeOfCode);
@@ -143,32 +142,48 @@ void ChangeEntryPoint(char* buffer, DWORD bufferSize, char* originalFilename, bo
 	}
 
 	DWORD newBufferSize = bufferSize;
-	if (m != PATCH_CAVERN) {
-		if (m == PATCH_EXTSECT) {
-			newBufferSize += pe.opt_hdr->FileAlignment;
-		} else {
-			newBufferSize += pe.opt_hdr->SectionAlignment;
-		}
-		buffer = (char *)realloc(buffer, newBufferSize);
-		if (!buffer) {
-			printf("Error reallocing - return\n");
-			return;
-		}
-		*reallocated = true;
-		if (ParsePE(buffer, newBufferSize, &pe)) {
-			printf("File error - incorrect PE after reallocation\n");
-			return;
-		}
-	}
 
 	bool patch_done = false;
 
-	if (m == PATCH_CAVERN) {
-		patch_done = patchCavern(&pe, buffer, bufferSize);
-	} else if (m == PATCH_EXTSECT) {
-		patch_done = patchExtSect(&pe, buffer, bufferSize);
-	} else if (m == PATCH_NEWSECT) {
-		patch_done = patchNewSect(&pe, buffer, bufferSize);
+	while (!patch_done) {
+		if (m != PATCH_CAVERN) {
+			if (m == PATCH_EXTSECT) {
+				newBufferSize = bufferSize + pe.opt_hdr->FileAlignment;
+			}
+			else {
+				newBufferSize = bufferSize + pe.opt_hdr->SectionAlignment;
+			}
+			buffer = (char *)realloc(buffer, newBufferSize);
+			if (!buffer) {
+				printf("Error reallocing - return\n");
+				return;
+			}
+			*reallocated = true;
+			if (ParsePE(buffer, newBufferSize, &pe)) {
+				printf("File error - incorrect PE after reallocation\n");
+				return;
+			}
+		}
+
+		if (m == PATCH_CAVERN) {
+			patch_done = patchCavern(&pe, buffer, bufferSize);
+		}
+		else if (m == PATCH_EXTSECT) {
+			patch_done = patchExtSect(&pe, buffer, bufferSize);
+		}
+		else if (m == PATCH_NEWSECT) {
+			patch_done = patchNewSect(&pe, buffer, bufferSize);
+		}
+		if (!patch_done) {
+			m = static_cast<PatchMode>((m + 1) % PATCH_TOTAL);
+		}
+	}
+
+	if (patch_done) {
+		printf("File succesfully patched\n");
+	}
+	else {
+		printf("Patching failed\n");
 	}
 
 	int len = strlen(originalFilename);
@@ -178,10 +193,6 @@ void ChangeEntryPoint(char* buffer, DWORD bufferSize, char* originalFilename, bo
 	new_name[len + 1] = 0;
 	WriteFileFromBuffer(new_name, buffer, newBufferSize);
 	free(new_name);
-
-	if (patch_done) {
-		printf("File succesfully patched\n");
-	}
 }
 
 static char byteCode[] = {

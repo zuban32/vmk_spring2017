@@ -10,3 +10,5 @@ typedef struct {
 } PEFile;
 
 int ParsePE(char *fileBuf, DWORD bufSize, PEFile *res);
+
+int dumpSections(PEFile *f);
