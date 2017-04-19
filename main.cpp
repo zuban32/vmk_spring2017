@@ -15,23 +15,11 @@ int main(int argc, char** argv)
 		DWORD fileSize = CheckFileSizeForCorrectness(GetFileSize(fileHandle, NULL));
 		if (INVALID_FILE_SIZE != fileSize)
 		{
-			char* buffer = (char*)malloc(fileSize);
-			if (!buffer) {
-				printf("Error mallocing\n");
-				return 1;
+			if (!ChangeEntryPoint(fileHandle, fileSize, argv[1])) {
+				printf("File successfully patched\n");
 			}
-			int readSize = ReadFileToBuffer(fileHandle, buffer, fileSize);
-			bool reallocated = false;
-			if (readSize != fileSize)
-			{
-				printf(CAN_NOT_READ_ENTIRE_FILE);
-			}
-			else
-			{
-				ChangeEntryPoint(buffer, fileSize, argv[1], &reallocated);
-			}
-			if(!reallocated) {
-				free(buffer);
+			else {
+				printf("File patching failed\n");
 			}
 		}
 		CloseHandle(fileHandle);

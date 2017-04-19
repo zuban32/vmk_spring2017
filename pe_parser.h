@@ -38,7 +38,7 @@ struct ENTRY_POINT_CODE
 HANDLE GetFileFromArguments( int argc, char** argv );
 DWORD ReadFileToBuffer( HANDLE fileHandle, char* buffer, DWORD bufferSize );
 DWORD WriteFileFromBuffer( char* filename, char* buffer, DWORD bufferSize );
-void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename, bool *reallocated );
+int ChangeEntryPoint( HANDLE fileHandle, DWORD fileSize, char* originalFilename );
 DWORD CheckFileSizeForCorrectness( DWORD fileSize );
 DWORD* GetPositionOfPattern( char* buffer, DWORD bufferSize, DWORD pattern );
 DWORD GetMaxCodeSize();

