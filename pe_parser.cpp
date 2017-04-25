@@ -24,7 +24,7 @@ static bool patchCavern(PEFile *pe, char **buffer, DWORD origSize, DWORD *newSiz
 				DWORD code_start = code_min_start + code_off;
 				ENTRY_POINT_CODE code = GetEntryPointCodeSmall(code_start,
 					pe->opt_hdr->AddressOfEntryPoint);
-				memcpy(buffer + sect->PointerToRawData + sect->Misc.VirtualSize + code_off,
+				memcpy(*buffer + sect->PointerToRawData + sect->Misc.VirtualSize + code_off,
 					code.code,
 					code.sizeOfCode);
 				pe->opt_hdr->AddressOfEntryPoint = code_start;
@@ -41,11 +41,12 @@ static bool patchExtSect(PEFile *pe, char **buffer, DWORD origSize, DWORD *newSi
 	printf("Patch mode - section extension\n");
 
 	int bufferSize = origSize + pe->opt_hdr->FileAlignment;
-	*buffer = (char *)realloc(*buffer, bufferSize);
-	if (!buffer) {
+	char *newBuf = (char *)realloc(*buffer, bufferSize);
+	if (!newBuf) {
 		printf("Error reallocing - return\n");
 		return false;
 	}
+	*buffer = newBuf;
 	if (ParsePE(*buffer, bufferSize, pe)) {
 		printf("File error - incorrect PE after reallocation\n");
 		return false;
@@ -72,7 +73,7 @@ static bool patchExtSect(PEFile *pe, char **buffer, DWORD origSize, DWORD *newSi
 					pe->opt_hdr->AddressOfEntryPoint);
 
 				memmove(*buffer + sect->PointerToRawData + sect->SizeOfRawData + data_shift,
-					buffer + sect->PointerToRawData + sect->SizeOfRawData,
+					*buffer + sect->PointerToRawData + sect->SizeOfRawData,
 					origSize - sect->PointerToRawData - sect->SizeOfRawData);
 
 				memcpy(*buffer + sect->PointerToRawData + sect->SizeOfRawData + code_off,
@@ -101,11 +102,12 @@ static bool patchNewSect(PEFile *pe, char **buffer, DWORD origSize, DWORD *newSi
 	printf("Patch mode - new section\n");
 
 	int bufferSize = origSize + pe->opt_hdr->SectionAlignment;
-	*buffer = (char *)realloc(*buffer, bufferSize);
-	if (!buffer) {
+	char *newBuf = (char *)realloc(*buffer, bufferSize);
+	if (!newBuf) {
 		printf("Error reallocing - return\n");
 		return false;
 	}
+	*buffer = newBuf;
 	if (ParsePE(*buffer, bufferSize, pe)) {
 		printf("File error - incorrect PE after reallocation\n");
 		return false;
