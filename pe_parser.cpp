@@ -5,7 +5,7 @@
 
 #define ALIGN_UP_TO(what, alignment) ((0x00 - alignment ) & what + alignment)
 
-static int patchCavern(PEFile *pe, char *buffer, DWORD origSize)
+static bool patchCavern(PEFile *pe, char **buffer, DWORD origSize, DWORD *newSize)
 {
 	printf("Patch mode - cavern\n");
 	for (int i = 0; i < pe->file_hdr->NumberOfSections; i++) {
@@ -28,16 +28,29 @@ static int patchCavern(PEFile *pe, char *buffer, DWORD origSize)
 					code.code,
 					code.sizeOfCode);
 				pe->opt_hdr->AddressOfEntryPoint = code_start;
-				return 0;
+				*newSize = origSize;
+				return true;
 			}
 		}
 	}
-	return -1;
+	return false;
 }
 
-static int patchExtSect(PEFile *pe, char *buffer, DWORD origSize)
+static bool patchExtSect(PEFile *pe, char **buffer, DWORD origSize, DWORD *newSize)
 {
 	printf("Patch mode - section extension\n");
+
+	int bufferSize = origSize + pe->opt_hdr->FileAlignment;
+	*buffer = (char *)realloc(*buffer, bufferSize);
+	if (!buffer) {
+		printf("Error reallocing - return\n");
+		return false;
+	}
+	if (ParsePE(*buffer, bufferSize, pe)) {
+		printf("File error - incorrect PE after reallocation\n");
+		return false;
+	}
+
 	for (int i = 0; i < pe->file_hdr->NumberOfSections; i++) {
 		IMAGE_SECTION_HEADER *sect = pe->sect_hdr_start + i;
 		if (sect->Characteristics & IMAGE_SCN_MEM_EXECUTE) {
@@ -54,15 +67,15 @@ static int patchExtSect(PEFile *pe, char *buffer, DWORD origSize)
 				}
 				printf("Random code offset = %#x\n", code_off);
 				DWORD code_start = code_min_start + code_off;
-				DWORD data_shift = (code_off / pe->opt_hdr->FileAlignment + 1) * pe->opt_hdr->FileAlignment;
+				DWORD data_shift = pe->opt_hdr->FileAlignment;
 				ENTRY_POINT_CODE code = GetEntryPointCodeSmall(code_start,
 					pe->opt_hdr->AddressOfEntryPoint);
 
-				memmove(buffer + sect->PointerToRawData + sect->SizeOfRawData + data_shift,
+				memmove(*buffer + sect->PointerToRawData + sect->SizeOfRawData + data_shift,
 					buffer + sect->PointerToRawData + sect->SizeOfRawData,
 					origSize - sect->PointerToRawData - sect->SizeOfRawData);
 
-				memcpy(buffer + sect->PointerToRawData + sect->SizeOfRawData + code_off,
+				memcpy(*buffer + sect->PointerToRawData + sect->SizeOfRawData + code_off,
 					code.code,
 					code.sizeOfCode);
 				pe->opt_hdr->AddressOfEntryPoint = code_start;
@@ -75,16 +88,28 @@ static int patchExtSect(PEFile *pe, char *buffer, DWORD origSize)
 						pe->sect_hdr_start[j].PointerToRawData += data_shift;
 					}
 				}
-				return data_shift;
+				*newSize = origSize + data_shift;
+				return true;
 			}
 		}
 	}
-	return -1;
+	return false;
 }
 
-static int patchNewSect(PEFile *pe, char *buffer, DWORD origSize)
+static bool patchNewSect(PEFile *pe, char **buffer, DWORD origSize, DWORD *newSize)
 {
 	printf("Patch mode - new section\n");
+
+	int bufferSize = origSize + pe->opt_hdr->SectionAlignment;
+	*buffer = (char *)realloc(*buffer, bufferSize);
+	if (!buffer) {
+		printf("Error reallocing - return\n");
+		return false;
+	}
+	if (ParsePE(*buffer, bufferSize, pe)) {
+		printf("File error - incorrect PE after reallocation\n");
+		return false;
+	}
 
 	DWORD chars = IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_CODE;
 	DWORD min_addr = (DWORD)-1, max_addr = 0;
@@ -100,7 +125,7 @@ static int patchNewSect(PEFile *pe, char *buffer, DWORD origSize)
 		}
 	}
 
-	if (min_addr - ((char *)(pe->sect_hdr_start + pe->file_hdr->NumberOfSections) + sizeof(IMAGE_SECTION_HEADER) - buffer)
+	if (min_addr - ((char *)(pe->sect_hdr_start + pe->file_hdr->NumberOfSections) + sizeof(IMAGE_SECTION_HEADER) - *buffer)
 		< sizeof(IMAGE_SECTION_HEADER)) {
 		printf("New section patching impossible\n");
 	} else {
@@ -122,11 +147,12 @@ static int patchNewSect(PEFile *pe, char *buffer, DWORD origSize)
 		pe->opt_hdr->SizeOfCode += new_section.Misc.VirtualSize;
 
 		ENTRY_POINT_CODE code = GetEntryPointCodeSmall(new_section.VirtualAddress + code_off, pe->opt_hdr->AddressOfEntryPoint);
-		memcpy(buffer + origSize + code_off, code.code, code.sizeOfCode);
+		memcpy(*buffer + origSize + code_off, code.code, code.sizeOfCode);
 		pe->opt_hdr->AddressOfEntryPoint = new_section.VirtualAddress + code_off;
-		return new_section.SizeOfRawData;
+		*newSize = origSize + new_section.SizeOfRawData;
+		return true;
 	}
-	return -1;
+	return false;
 }
 
 int ChangeEntryPoint(HANDLE fileHandle, DWORD fileSize, char* originalFilename)
@@ -159,48 +185,16 @@ int ChangeEntryPoint(HANDLE fileHandle, DWORD fileSize, char* originalFilename)
 	while (!patch_done) {
 		switch (mode) {
 		case PATCH_CAVERN:
-			bufferSize = fileSize;
+			patch_done = patchCavern(&pe, &buffer, fileSize, &bufferSize);
 			break;
 		case PATCH_EXTSECT:
-			bufferSize = fileSize + pe.opt_hdr->FileAlignment;
+			patch_done = patchExtSect(&pe, &buffer, fileSize, &bufferSize);
 			break;
 		case PATCH_NEWSECT:
-			bufferSize = fileSize + pe.opt_hdr->SectionAlignment;
+			patch_done = patchNewSect(&pe, &buffer, fileSize, &bufferSize);
 			break;
 		default:
 			break;
-		}
-
-		buffer = (char *)realloc(buffer, bufferSize);
-		if (!buffer) {
-			printf("Error reallocing - return\n");
-			return 1;
-		}
-		if (ParsePE(buffer, bufferSize, &pe)) {
-			printf("File error - incorrect PE after reallocation\n");
-			return 1;
-		}
-
-		DWORD sizeFix = -1;
-		switch (mode) {
-		case PATCH_CAVERN:
-			sizeFix = patchCavern(&pe, buffer, fileSize);
-			break;
-		case PATCH_EXTSECT:
-			sizeFix = patchExtSect(&pe, buffer, fileSize);
-			break;
-		case PATCH_NEWSECT:
-			sizeFix = patchNewSect(&pe, buffer, fileSize);
-			break;
-		default:
-			break;
-		}
-
-		if (sizeFix == -1) {
-			patch_done = false;
-		} else {
-			patch_done = true;
-			bufferSize = fileSize + sizeFix;
 		}
 
 		if (!patch_done) {
